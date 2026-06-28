@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { BarChart3, Building2, Camera, CheckCircle2, Clock, ExternalLink, HardHat, RefreshCw, TrendingUp } from 'lucide-react';
+import { BarChart3, Building2, Camera, CheckCircle2, Clock, ExternalLink, HardHat, RefreshCw } from 'lucide-react';
 
 interface AtividadeEstatistica {
   id: string;
@@ -30,25 +30,20 @@ export default function NexusPainelEscritorio() {
   async function carregarDadosPainel() {
     setLoading(true);
     try {
-      // 1. Pega total de unidades cadastradas no prédio
       const { count: contagemUnidades } = await supabase.from('unidades').select('*', { count: 'exact', head: true });
       const totalUnids = contagemUnidades || 0;
       setTotalApartamentos(totalUnids);
 
-      // 2. Pega todas as atividades
       const { data: atividades } = await supabase.from('atividades').select('*').order('nome');
       
-      // 3. Pega todos os apontamentos
       const { data: apontamentos } = await supabase
         .from('apontamentos')
         .select('status, atividade_id, foto_url, updated_at, unidades(nome, pavimentos(nome))');
 
       if (atividades && apontamentos) {
-        // Calcular estatísticas por atividade
         const listaEst: AtividadeEstatistica[] = activitiesDataFormat(atividades, apontamentos, totalUnids);
         setEstatisticas(listaEst);
 
-        // Filtrar e ordenar apontamentos que possuem fotos para o feed de auditoria
         const listaFotos: UltimaFoto[] = photosFeedDataFormat(apontamentos);
         setUltimasFotos(listaFotos);
       }
@@ -83,7 +78,7 @@ export default function NexusPainelEscritorio() {
       .map((ap) => ({
         unidadeNome: ap.unidades?.nome || 'N/A',
         pavimentoNome: ap.unidades?.pavimentos?.nome || 'N/A',
-        atividadeNome: ap.atividade_id ? 'Serviço' : 'Geral', // simplificado para o feed
+        atividadeNome: ap.atividade_id ? 'Serviço' : 'Geral',
         fotoUrl: ap.foto_url,
         updatedAt: new Date(ap.updated_at).toLocaleDateString('pt-BR', {
           day: '2-digit',
@@ -93,25 +88,36 @@ export default function NexusPainelEscritorio() {
         })
       }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, 6); // exibe as 6 últimas fotos
+      .slice(0, 6);
   }
 
+  // TRAVA DE SEGURANÇA B2B: Verifica a sessão antes de abrir indicadores
   useEffect(() => {
-    carregarDadosPainel();
+    async function checarSessaoECarregar() {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        window.location.href = '/login';
+        return;
+      }
+
+      carregarDadosPainel();
+    }
+
+    checarSessaoECarregar();
   }, []);
 
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4">
         <RefreshCw className="w-10 h-10 animate-spin text-amber-500 mb-4" />
-        <p className="text-lg font-medium">Processando indicadores da Torre A...</p>
+        <p className="text-lg font-medium">Autenticando painel executivo...</p>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans antialiased">
-      {/* HEADER DO PAINEL */}
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-800 pb-6 mb-8">
         <div className="flex items-center gap-3">
           <div className="bg-amber-500 p-2.5 rounded-xl text-slate-950 font-black tracking-tighter text-xl shadow-lg">
@@ -120,7 +126,7 @@ export default function NexusPainelEscritorio() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-2xl tracking-tight text-white">NEXUS OPERAÇÕES</h1>
-              <span className="bg-slate-800 text-slate-400 text-[10px] px-2 py-0.5 rounded-full border border-slate-700 font-mono">DESKTOP V1.0</span>
+              <span className="bg-slate-800 text-slate-400 text-[10px] px-2 py-0.5 rounded-full border border-slate-700 font-mono">DESKTOP V1.1</span>
             </div>
             <p className="text-slate-400 text-xs mt-0.5">Visão Executiva em Tempo Real: <strong className="text-slate-200">Torre A - Residencial Nexus</strong></p>
           </div>
@@ -135,7 +141,6 @@ export default function NexusPainelEscritorio() {
       </header>
 
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* COLUNA ESQUERDA + CENTRAL: INDICADORES E CRONOGRAMA */}
         <div className="lg:col-span-2 space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex items-center gap-4 shadow-sm">
@@ -171,7 +176,6 @@ export default function NexusPainelEscritorio() {
             </div>
           </div>
 
-          {/* VOLUMETRIA / CURVA DE AVANÇO */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-md">
             <h2 className="text-sm font-bold uppercase tracking-wider text-slate-300 mb-5 flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-amber-500" /> Saúde Físico-Financeira por Atividade
@@ -185,7 +189,6 @@ export default function NexusPainelEscritorio() {
                       {atv.porcentagem}% Concluído
                     </span>
                   </div>
-                  {/* Barra de Progresso */}
                   <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
                     <div 
                       className="bg-gradient-to-r from-amber-500 to-emerald-500 h-full rounded-full transition-all duration-500"
@@ -203,7 +206,6 @@ export default function NexusPainelEscritorio() {
           </div>
         </div>
 
-        {/* COLUNA DIREITA: FEED DE FOTOS DE AUDITORIA AO VIVO */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-md flex flex-col">
           <h2 className="text-sm font-bold uppercase tracking-wider text-slate-300 mb-4 flex items-center gap-2">
             <Camera className="w-4 h-4 text-emerald-500" /> Feed de Auditoria Visual (Canteiro)

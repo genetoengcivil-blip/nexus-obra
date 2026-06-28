@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Building2, CheckCircle2, Clock, PlayCircle, RefreshCw, Layers, HardHat, Camera, X, UploadCloud, Check } from 'lucide-react';
+import { Building2, CheckCircle2, Clock, PlayCircle, RefreshCw, Layers, HardHat, Camera, X, UploadCloud } from 'lucide-react';
 
 interface Unidade {
   id: string;
@@ -35,7 +35,6 @@ export default function NexusObraMobileMVP() {
   const [seeding, setSeeding] = useState<boolean>(false);
   const [bancoVazio, setBancoVazio] = useState<boolean>(false);
 
-  // Estados para gerenciar a câmera e upload probatório
   const [unidadeParaFoto, setUnidadeParaFoto] = useState<{ id: string; nome: string } | null>(null);
   const [uploadingFoto, setUploadingFoto] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -94,8 +93,20 @@ export default function NexusObraMobileMVP() {
     setApontamentos(mapaStatus);
   }
 
+  // TRAVA DE SEGURANÇA B2B: Verifica se há utilizador autenticado
   useEffect(() => {
-    carregarDadosBanco();
+    async function checarSessaoECarregar() {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        window.location.href = '/login';
+        return;
+      }
+
+      carregarDadosBanco();
+    }
+
+    checarSessaoECarregar();
   }, []);
 
   useEffect(() => {
@@ -112,7 +123,7 @@ export default function NexusObraMobileMVP() {
       updated_at: new Date().toISOString()
     };
 
-    if (fotoUrl) payload.foto_url = fotoUrl;
+    if (fotoUrl !== undefined) payload.foto_url = fotoUrl;
 
     const { error } = await supabase.from('apontamentos').upsert(
       payload,
@@ -136,10 +147,8 @@ export default function NexusObraMobileMVP() {
       setApontamentos((prev) => ({ ...prev, [unid.id]: { ...dadosAtuais, status: proximo } }));
       salvarStatusBanco(unid.id, proximo);
     } else if (statusAtual === 'em_andamento') {
-      // REGRA DE AUDITORIA: Para concluir, exige foto! Abrir modal da câmera.
       setUnidadeParaFoto({ id: unid.id, nome: unid.nome });
     } else if (statusAtual === 'concluido') {
-      // Se já estava concluído e clicou, volta para não iniciado e limpa a foto
       const proximo = 'nao_iniciado';
       setApontamentos((prev) => ({ ...prev, [unid.id]: { status: proximo } }));
       salvarStatusBanco(unid.id, proximo, '');
@@ -155,7 +164,6 @@ export default function NexusObraMobileMVP() {
     setUploadingFoto(true);
 
     try {
-      // Gera um nome único: idAtividade_idUnidade_timestamp.jpg
       const extensao = arquivo.name.split('.').pop() || 'jpg';
       const nomeArquivo = `${selectedAtividade}_${unidadeParaFoto.id}_${Date.now()}.${extensao}`;
       const caminho = `torre_a/${nomeArquivo}`;
@@ -172,14 +180,13 @@ export default function NexusObraMobileMVP() {
 
       const linkPublico = urlData.publicUrl;
 
-      // Atualiza tela e banco com status concluido + URL da foto
       setApontamentos((prev) => ({
         ...prev,
         [unidadeParaFoto.id]: { status: 'concluido', foto_url: linkPublico }
       }));
 
       await salvarStatusBanco(unidadeParaFoto.id, 'concluido', linkPublico);
-      setUnidadeParaFoto(null); // Fecha o modal
+      setUnidadeParaFoto(null);
     } catch (erro: any) {
       alert('Falha ao enviar foto para a nuvem: ' + erro.message);
     } finally {
@@ -259,7 +266,7 @@ export default function NexusObraMobileMVP() {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4">
         <RefreshCw className="w-10 h-10 animate-spin text-amber-500 mb-4" />
-        <p className="text-lg font-medium">Conectando ao canteiro digital...</p>
+        <p className="text-lg font-medium">Verificando credenciais de canteiro...</p>
       </div>
     );
   }
@@ -296,7 +303,7 @@ export default function NexusObraMobileMVP() {
             </div>
             <div>
               <h1 className="font-bold text-base tracking-tight leading-none text-white">NEXUS OBRA</h1>
-              <span className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Canteiro Mobile v1.1</span>
+              <span className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Canteiro Mobile v1.3</span>
             </div>
           </div>
           <button 
@@ -376,7 +383,6 @@ export default function NexusObraMobileMVP() {
         </div>
       </main>
 
-      {/* MODAL OBRIGATÓRIO DE CAPTURA DE PROVA */}
       {unidadeParaFoto && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -398,7 +404,6 @@ export default function NexusObraMobileMVP() {
               Para validar a conclusão de <strong className="text-white bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">{unidadeParaFoto.nome}</strong>, anexe uma foto nítida do serviço executado.
             </p>
 
-            {/* Input invisivel que força a abertura nativa da câmera em celulares */}
             <input
               type="file"
               accept="image/*"
@@ -421,7 +426,7 @@ export default function NexusObraMobileMVP() {
               ) : (
                 <>
                   <UploadCloud className="w-5 h-5" />
-                  <span>Abrir Cãmera do Celular</span>
+                  <span>Abrir Câmera do Celular</span>
                 </>
               )}
             </button>
