@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Building2, CheckCircle2, Clock, PlayCircle, RefreshCw, Layers, HardHat, AlertTriangle } from 'lucide-react';
+import { Building2, CheckCircle2, Clock, PlayCircle, RefreshCw, Layers, HardHat, Camera, X, UploadCloud, Check } from 'lucide-react';
 
 interface Unidade {
   id: string;
@@ -21,14 +21,24 @@ interface Atividade {
   nome: string;
 }
 
+interface ApontamentoData {
+  status: string;
+  foto_url?: string;
+}
+
 export default function NexusObraMobileMVP() {
   const [atividades, setAtividades] = useState<Atividade[]>([]);
   const [selectedAtividade, setSelectedAtividade] = useState<string>('');
   const [pavimentos, setPavimentos] = useState<Pavimento[]>([]);
-  const [apontamentos, setApontamentos] = useState<Record<string, string>>({});
+  const [apontamentos, setApontamentos] = useState<Record<string, ApontamentoData>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [seeding, setSeeding] = useState<boolean>(false);
   const [bancoVazio, setBancoVazio] = useState<boolean>(false);
+
+  // Estados para gerenciar a câmera e upload probatório
+  const [unidadeParaFoto, setUnidadeParaFoto] = useState<{ id: string; nome: string } | null>(null);
+  const [uploadingFoto, setUploadingFoto] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function carregarDadosBanco() {
     setLoading(true);
@@ -71,12 +81,15 @@ export default function NexusObraMobileMVP() {
     if (!idAtividade) return;
     const { data } = await supabase
       .from('apontamentos')
-      .select('unidade_id, status')
+      .select('unidade_id, status, foto_url')
       .eq('atividade_id', idAtividade);
 
-    const mapaStatus: Record<string, string> = {};
+    const mapaStatus: Record<string, ApontamentoData> = {};
     data?.forEach((item) => {
-      mapaStatus[item.unidade_id] = item.status;
+      mapaStatus[item.unidade_id] = {
+        status: item.status,
+        foto_url: item.foto_url
+      };
     });
     setApontamentos(mapaStatus);
   }
@@ -91,31 +104,86 @@ export default function NexusObraMobileMVP() {
     }
   }, [selectedAtividade]);
 
-  async function alternarStatusUnidade(idUnidade: string) {
-    if (!selectedAtividade) return;
+  async function salvarStatusBanco(idUnidade: string, status: string, fotoUrl?: string) {
+    const payload: any = {
+      unidade_id: idUnidade,
+      atividade_id: selectedAtividade,
+      status: status,
+      updated_at: new Date().toISOString()
+    };
 
-    const statusAtual = apontamentos[idUnidade] || 'nao_iniciado';
-    let proximoStatus = 'nao_iniciado';
-
-    if (statusAtual === 'nao_iniciado') proximoStatus = 'em_andamento';
-    else if (statusAtual === 'em_andamento') proximoStatus = 'concluido';
-    else if (statusAtual === 'concluido') proximoStatus = 'nao_iniciado';
-
-    setApontamentos((prev) => ({ ...prev, [idUnidade]: proximoStatus }));
+    if (fotoUrl) payload.foto_url = fotoUrl;
 
     const { error } = await supabase.from('apontamentos').upsert(
-      {
-        unidade_id: idUnidade,
-        atividade_id: selectedAtividade,
-        status: proximoStatus,
-        updated_at: new Date().toISOString()
-      },
+      payload,
       { onConflict: 'unidade_id,atividade_id' }
     );
 
     if (error) {
       alert('Erro ao salvar no servidor: ' + error.message);
       carregarStatusDaAtividade(selectedAtividade);
+    }
+  }
+
+  function acionarCliqueUnidade(unid: Unidade) {
+    if (!selectedAtividade) return;
+
+    const dadosAtuais = apontamentos[unid.id] || { status: 'nao_iniciado' };
+    const statusAtual = dadosAtuais.status;
+
+    if (statusAtual === 'nao_iniciado') {
+      const proximo = 'em_andamento';
+      setApontamentos((prev) => ({ ...prev, [unid.id]: { ...dadosAtuais, status: proximo } }));
+      salvarStatusBanco(unid.id, proximo);
+    } else if (statusAtual === 'em_andamento') {
+      // REGRA DE AUDITORIA: Para concluir, exige foto! Abrir modal da câmera.
+      setUnidadeParaFoto({ id: unid.id, nome: unid.nome });
+    } else if (statusAtual === 'concluido') {
+      // Se já estava concluído e clicou, volta para não iniciado e limpa a foto
+      const proximo = 'nao_iniciado';
+      setApontamentos((prev) => ({ ...prev, [unid.id]: { status: proximo } }));
+      salvarStatusBanco(unid.id, proximo, '');
+    }
+  }
+
+  async function uploadFotoComprovante(event: React.ChangeEvent<HTMLInputElement>) {
+    if (!event.target.files || event.target.files.length === 0 || !unidadeParaFoto) {
+      return;
+    }
+
+    const arquivo = event.target.files[0];
+    setUploadingFoto(true);
+
+    try {
+      // Gera um nome único: idAtividade_idUnidade_timestamp.jpg
+      const extensao = arquivo.name.split('.').pop() || 'jpg';
+      const nomeArquivo = `${selectedAtividade}_${unidadeParaFoto.id}_${Date.now()}.${extensao}`;
+      const caminho = `torre_a/${nomeArquivo}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('comprovantes')
+        .upload(caminho, arquivo, { cacheControl: '3600', upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage
+        .from('comprovantes')
+        .getPublicUrl(caminho);
+
+      const linkPublico = urlData.publicUrl;
+
+      // Atualiza tela e banco com status concluido + URL da foto
+      setApontamentos((prev) => ({
+        ...prev,
+        [unidadeParaFoto.id]: { status: 'concluido', foto_url: linkPublico }
+      }));
+
+      await salvarStatusBanco(unidadeParaFoto.id, 'concluido', linkPublico);
+      setUnidadeParaFoto(null); // Fecha o modal
+    } catch (erro: any) {
+      alert('Falha ao enviar foto para a nuvem: ' + erro.message);
+    } finally {
+      setUploadingFoto(false);
     }
   }
 
@@ -219,7 +287,7 @@ export default function NexusObraMobileMVP() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 pb-12 font-sans antialiased selection:bg-amber-500 selection:text-black">
+    <div className="min-h-screen bg-slate-950 text-slate-100 pb-12 font-sans antialiased selection:bg-amber-500 selection:text-black relative">
       <header className="sticky top-0 z-20 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 shadow-md">
         <div className="max-w-md mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -228,7 +296,7 @@ export default function NexusObraMobileMVP() {
             </div>
             <div>
               <h1 className="font-bold text-base tracking-tight leading-none text-white">NEXUS OBRA</h1>
-              <span className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Canteiro Mobile v1.0</span>
+              <span className="text-[10px] uppercase tracking-widest text-amber-400 font-semibold">Canteiro Mobile v1.1</span>
             </div>
           </div>
           <button 
@@ -261,7 +329,7 @@ export default function NexusObraMobileMVP() {
 
         <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-3 px-1">
           <span>Matriz Espacial (Torre A)</span>
-          <span>Toque para avançar</span>
+          <span>Foto obrigatória no aceite</span>
         </div>
 
         <div className="space-y-3.5">
@@ -277,14 +345,24 @@ export default function NexusObraMobileMVP() {
 
               <div className="grid grid-cols-2 gap-2.5">
                 {pav.unidades.map((unid) => {
-                  const statusAtual = apontamentos[unid.id] || 'nao_iniciado';
+                  const dados = apontamentos[unid.id] || { status: 'nao_iniciado' };
+                  const statusAtual = dados.status;
+                  const temFoto = !!dados.foto_url;
+
                   return (
                     <button
                       key={unid.id}
-                      onClick={() => alternarStatusUnidade(unid.id)}
-                      className={`py-3 px-3 rounded-lg border font-semibold text-xs transition-all shadow-sm flex flex-col items-start justify-center select-none active:scale-95 ${renderizarCorBotao(statusAtual)}`}
+                      onClick={() => acionarCliqueUnidade(unid)}
+                      className={`py-3 px-3 rounded-lg border font-semibold text-xs transition-all shadow-sm flex flex-col items-start justify-center select-none active:scale-95 relative overflow-hidden ${renderizarCorBotao(statusAtual)}`}
                     >
-                      <span className="text-sm font-bold tracking-tight mb-0.5">{unid.nome}</span>
+                      <div className="flex justify-between items-center w-full mb-0.5">
+                        <span className="text-sm font-bold tracking-tight">{unid.nome}</span>
+                        {temFoto && statusAtual === 'concluido' && (
+                          <span title="Comprovante salvo" className="bg-emerald-950/40 p-1 rounded-full text-emerald-200">
+                            <Camera className="w-3 h-3 inline" />
+                          </span>
+                        )}
+                      </div>
                       <span className="text-[10px] uppercase tracking-wider opacity-90 block">
                         {renderizarIconeStatus(statusAtual)}
                         {statusAtual.replace('_', ' ')}
@@ -296,13 +374,64 @@ export default function NexusObraMobileMVP() {
             </div>
           ))}
         </div>
-
-        <div className="mt-8 p-4 bg-slate-900/40 rounded-xl border border-slate-800/60 text-center">
-          <p className="text-[11px] text-slate-500">
-            💡 <strong className="text-slate-400">Dica de teste:</strong> Dê 1 clique no apartamento para marcar como <span className="text-amber-500 font-bold">Em Andamento</span> e 2 cliques para <span className="text-emerald-500 font-bold">Concluído</span>.
-          </p>
-        </div>
       </main>
+
+      {/* MODAL OBRIGATÓRIO DE CAPTURA DE PROVA */}
+      {unidadeParaFoto && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center pb-4 mb-4 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-amber-500 font-bold">
+                <Camera className="w-5 h-5" />
+                <span>Prova Material Obrigatória</span>
+              </div>
+              <button 
+                onClick={() => !uploadingFoto && setUnidadeParaFoto(null)}
+                className="text-slate-500 hover:text-white p-1"
+                disabled={uploadingFoto}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-slate-300 mb-6 leading-relaxed">
+              Para validar a conclusão de <strong className="text-white bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">{unidadeParaFoto.nome}</strong>, anexe uma foto nítida do serviço executado.
+            </p>
+
+            {/* Input invisivel que força a abertura nativa da câmera em celulares */}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              ref={fileInputRef}
+              onChange={uploadFotoComprovante}
+              className="hidden"
+            />
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingFoto}
+              className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-950 flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+            >
+              {uploadingFoto ? (
+                <>
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  <span>Enviando para a nuvem...</span>
+                </>
+              ) : (
+                <>
+                  <UploadCloud className="w-5 h-5" />
+                  <span>Abrir Cãmera do Celular</span>
+                </>
+              )}
+            </button>
+            
+            <p className="text-[10px] text-slate-500 text-center mt-4">
+              * A imagem será carimbada com data/hora no servidor Nexus.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
